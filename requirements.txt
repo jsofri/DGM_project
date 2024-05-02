@@ -1,0 +1,7 @@
+blobfile
+click
+matplotlib
+numpy
+pytorch
+torchvision
+tqdm
