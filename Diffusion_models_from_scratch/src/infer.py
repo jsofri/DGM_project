@@ -23,7 +23,7 @@ import click
 @click.option("--guidance", "w", type=int, default=4, help="Classifier guidance scale which must be >= 0. The higher the value, the better the image quality, but the lower the image diversity.", required=False)
 @click.option("--class_label", "class_label", type=int, default=0, help="0-indexed class value. Use -1 for a random class and any other class value >= 0 for the other classes. FOr imagenet, the class value range from 0 to 999 and can be found in data/class_information.txt", required=False)
 @click.option("--corrected", "corrected", type=bool, default=False, help="True to put a limit on generation, False to not put a litmit on generation. If the model is generating images of a single color, then you may need to set this flag to True. Note: This restriction is usually needed when generating long sequences (low step size) Note: With a higher guidance w, the correction usually messes up generation.", required=False)
-@click.option("--classifier-guidance", "classifier_guidance", type=bool, default=False, help="True to do classifier guidance, False to do classifier-free guidance", required=False)
+@click.option("--classifier-guidance", "classifier_guidance", type=int, default=0, help="True to do classifier guidance, False to do classifier-free guidance", required=False)
 
 # Output parameters
 @click.option("--out_imgname", "out_imgname", type=str, default="fig.png", help="Name of the file to save the output image to.", required=False)

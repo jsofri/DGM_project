@@ -30,7 +30,7 @@ if __name__ == "__main__":
         f"--grads_file",
         f"grads",
         f"--classifier-guidance",
-        f"True"
+        f"2"
     ]
 
     infer()

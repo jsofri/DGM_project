@@ -22,12 +22,12 @@ from .Variance_Scheduler import DDIM_Scheduler
 from tqdm import tqdm
 
 
-# classifier = models.resnet18(pretrained=True)
-# classifier.eval()  # Set the model to evaluation mode
-# classifier_transform = transforms.Compose([
-    # transforms.Resize((224,224)),
-    # transforms.ToTensor(),
-# ])
+classifier = models.resnet18(pretrained=True)
+classifier.eval()  # Set the model to evaluation mode
+classifier_transform = transforms.Compose([
+    transforms.Resize((224,224)),
+    transforms.ToTensor(),
+])
 
 # work around to load guided diffusion 64x64 classifier
 guided_diffusion_root = os.environ["REPO_ROOT"] + "/guided-diffusion"
@@ -499,7 +499,7 @@ class diff_model(nn.Module):
             exit()
         return out
 
-    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False):
+    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False, classifier_guidance=2):
         assert w >= 0.0, "The value of w (classifier guidance factor) cannot be less than 0."
         class_label = int(class_label)
         assert class_label > -2 and class_label < self.num_classes,\
@@ -543,40 +543,52 @@ class diff_model(nn.Module):
         # Get classifier predictions if class_label is specified and w > 0
         if class_label != -1 and w > 0 and self.do_guidance:
             with torch.enable_grad():
-                # Apply the classifier_transform to each image in the batch
-                # x_in = torch.stack([classifier_transform(transforms.ToPILImage()((image))) for image in x_t])
-                # x_in = x_in.detach().requires_grad_(True)
-                x_in = x_t.detach().requires_grad_(True)
-                logits = classifier2(x_in, t_DDIM)
-                log_probs = F.log_softmax(logits, dim=-1)
+                if classifier_guidance == 1:  # use resnet18 classifier, which requires rescale of the image and the gradient
+                    # Apply the classifier_transform to each image in the batch
+                    x_in = torch.stack([classifier_transform(transforms.ToPILImage()((image))) for image in x_t])
+                    x_in = x_in.detach().requires_grad_(True)
 
-                # Select the log probability of the desired class
-                selected_log_prob = log_probs[:, class_label]
-                if self.min_prediction > selected_log_prob:
-                    self.min_prediction = selected_log_prob
-                    grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
-                    self.grads.append(grad)
-                    noise_t -= grad * var_t * w
-                else:
-                    self.do_guidance = False
+                    # Compute the gradient of the selected log probability with respect to the input image
+                    classifier.zero_grad()  # Reset gradients to zero to avoid accumulation
+                    logits = classifier(x_in)
+                    log_probs = F.log_softmax(logits, dim=-1)
 
-                # Compute the gradient of the selected log probability with respect to the input image
-                # classifier2.zero_grad()  # Reset gradients to zero to avoid accumulation
-                # selected_log_prob.backward()  # Backpropagate to compute gradients
+                    # Select the log probability of the desired class
+                    selected_log_prob = log_probs[:, class_label]
 
-                # Retrieve the gradient of the input image
-                # grad_x_in = x_in.grad
+                    selected_log_prob.backward()  # Backpropagate to compute gradients
 
-                # Resize the gradients to match the input image size (64x64)
-                # grad_x_in_resized = F.interpolate(grad_x_in, size=(64, 64), mode='bicubic', align_corners=False)
+                    # Retrieve the gradient of the input image
+                    grad_x_in = x_in.grad
 
-                # Clip the gradient by value
-                # clip_value = 0.5  # Define the maximum allowed absolute value of the gradient
-                # grad_x_in.clamp_(-clip_value, clip_value)
+                    # Resize the gradients to match the input image size (64x64)
+                    grad_x_in_resized = F.interpolate(grad_x_in, size=(64, 64), mode='bicubic', align_corners=False)
 
-                # Modify the noise vector by subtracting the scaled gradient
-                # 'w' is the scaling factor controlling the strength of the guidance
-                # noise_t += var_t * w * grad_x_in_resized
+                    # Clip the gradient by value
+                    clip_value = 0.5  # Define the maximum allowed absolute value of the gradient
+                    grad_x_in_resized.clamp_(-clip_value, clip_value)
+
+                    self.grads.append(grad_x_in_resized)
+
+                    # Modify the noise vector by subtracting the scaled gradient
+                    # 'w' is the scaling factor controlling the strength of the guidance
+                    noise_t += var_t * w * grad_x_in_resized
+
+                if classifier_guidance == 2:  # use guided diffusion 64x64 classifier
+                    x_in = x_t.detach().requires_grad_(True)
+                    logits = classifier2(x_in, t_DDIM)
+                    log_probs = F.log_softmax(logits, dim=-1)
+
+                    # Select the log probability of the desired class
+                    selected_log_prob = log_probs[:, class_label]
+                    if self.min_prediction > selected_log_prob:
+                        self.min_prediction = selected_log_prob
+                        grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
+                        self.grads.append(grad)
+                        noise_t -= grad * var_t * w
+                    else:
+                        self.do_guidance = False
+
         # """
         # END OF CLASSIFIER GUIDANCE
 
@@ -623,7 +635,7 @@ class diff_model(nn.Module):
     #   imgs - (only if save_intermediate=True) list of iternediate
     #          outputs for the first image i the batch of shape (steps, C, L, W)
     @torch.no_grad()
-    def sample_imgs(self, batchSize, class_label=-1, w=0.0, save_intermediate=False, use_tqdm=False, unreduce=False, corrected=False, classifier_guidance=False, grads_file=None):
+    def sample_imgs(self, batchSize, class_label=-1, w=0.0, save_intermediate=False, use_tqdm=False, unreduce=False, corrected=False, classifier_guidance=0, grads_file=None):
         # Make sure the model is in eval mode
         self.eval()
 
@@ -637,8 +649,8 @@ class diff_model(nn.Module):
             if use_tqdm else zip(reversed(range(1, num_steps+1)), reversed(range(1, self.T+1, self.step_size))):
 
             # Unoise by 1 step according to the DDIM and DDPM scheduler
-            if classifier_guidance:
-                output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected)
+            if classifier_guidance > 0:
+                    output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected, classifier_guidance)
             else:
                 output = self.unnoise_batch(output, t_DDIM, t_DDPM, class_label, w, corrected)
             if save_intermediate:
@@ -647,8 +659,8 @@ class diff_model(nn.Module):
         # Unreduce the image from [-1:1] to [0:255]
         if unreduce:
             output = unreduce_image(output).clamp(0, 255)
-        # if grads_file:
-            # self.save_grads_to_file(grads_file)
+        if grads_file:
+            self.save_grads_to_file(grads_file)
             # self.save_grads_gif(grads_file)
 
         # Return the output images and potential intermediate output
