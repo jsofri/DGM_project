@@ -40,6 +40,7 @@ classifier2 = create_classifier(64, False, 128, 4, "32,16,8", True, True, 'atten
 classifier2.load_state_dict(
     dist_util.load_state_dict(model_path, map_location="cpu")
 )
+classifier2.eval()
 sys.path.pop()
 
 
@@ -78,7 +79,7 @@ class diff_model(nn.Module):
                  c_dim=None, num_classes=None, 
                  atn_resolution=16, dropoutRate=0.0, 
                  step_size=1, DDIM_scale=0.5,
-                 start_epoch=1, start_step=0):
+                 start_epoch=1, start_step=0, no_free_guidance=False):
         super(diff_model, self).__init__()
         
         self.beta_sched = beta_sched
@@ -88,7 +89,8 @@ class diff_model(nn.Module):
         self.num_classes = num_classes
         self.min_prediction = float('inf')
         self.do_guidance = True
-        self.grads = []
+        self.log_scores = []
+        self.no_free_guidance = no_free_guidance
 
         assert step_size > 0 and step_size <= T, "Step size must be in the range [1, T]"
         assert DDIM_scale >= 0, "DDIM scale must be greater than or equal to 0"
@@ -296,8 +298,11 @@ class diff_model(nn.Module):
 
         # Embed the class info
         if type(c) != type(None):
-            # One hot encode the class embeddings
-            c = torch.nn.functional.one_hot(c.to(torch.int64), self.num_classes).to(self.device).to(torch.float)
+            if self.no_free_guidance:
+                c = torch.zeros(1, self.num_classes).to(self.device).to(torch.float)
+            else:
+                # One hot encode the class embeddings
+                c = torch.nn.functional.one_hot(c.to(torch.int64), self.num_classes).to(self.device).to(torch.float)
 
             c = self.c_emb(c)
 
@@ -499,7 +504,7 @@ class diff_model(nn.Module):
             exit()
         return out
 
-    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False, classifier_guidance=2):
+    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False, classifier_guidance="openai"):
         assert w >= 0.0, "The value of w (classifier guidance factor) cannot be less than 0."
         class_label = int(class_label)
         assert class_label > -2 and class_label < self.num_classes,\
@@ -537,13 +542,12 @@ class diff_model(nn.Module):
 
         var_t = self.vs_to_variance(v_t, t_DDIM)
 
-        # """
         # START OF CLASSIFIER GUIDANCE
 
         # Get classifier predictions if class_label is specified and w > 0
         if class_label != -1 and w > 0 and self.do_guidance:
             with torch.enable_grad():
-                if classifier_guidance == 1:  # use resnet18 classifier, which requires rescale of the image and the gradient
+                if classifier_guidance == "resnet18":  # use resnet18 classifier, which requires rescale of the image and the gradient
                     # Apply the classifier_transform to each image in the batch
                     x_in = torch.stack([classifier_transform(transforms.ToPILImage()((image))) for image in x_t])
                     x_in = x_in.detach().requires_grad_(True)
@@ -555,6 +559,7 @@ class diff_model(nn.Module):
 
                     # Select the log probability of the desired class
                     selected_log_prob = log_probs[:, class_label]
+                    self.log_scores.append(float(selected_log_prob[0]))
 
                     selected_log_prob.backward()  # Backpropagate to compute gradients
 
@@ -568,28 +573,23 @@ class diff_model(nn.Module):
                     clip_value = 0.5  # Define the maximum allowed absolute value of the gradient
                     grad_x_in_resized.clamp_(-clip_value, clip_value)
 
-                    self.grads.append(grad_x_in_resized)
-
                     # Modify the noise vector by subtracting the scaled gradient
                     # 'w' is the scaling factor controlling the strength of the guidance
                     noise_t += var_t * w * grad_x_in_resized
 
-                if classifier_guidance == 2:  # use guided diffusion 64x64 classifier
+                if classifier_guidance == "openai":  # use guided diffusion 64x64 classifier
                     x_in = x_t.detach().requires_grad_(True)
-                    logits = classifier2(x_in, t_DDIM)
+                    # logits = classifier2(x_in, torch.tensor([0]))
+                    logits = classifier2(x_in, t_DDPM)
                     log_probs = F.log_softmax(logits, dim=-1)
 
                     # Select the log probability of the desired class
                     selected_log_prob = log_probs[:, class_label]
-                    if self.min_prediction > selected_log_prob:
-                        self.min_prediction = selected_log_prob
-                        grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
-                        self.grads.append(grad)
-                        noise_t -= grad * var_t * w
-                    else:
-                        self.do_guidance = False
+                    self.log_scores.append(float(selected_log_prob[0]))
+                    grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
+                    # noise_t -= grad * var_t * w
+                    noise_t -= grad * w
 
-        # """
         # END OF CLASSIFIER GUIDANCE
 
         sqrt_a_bar_t = self.scheduler.sample_sqrt_a_bar_t(t_DDIM)
@@ -635,12 +635,15 @@ class diff_model(nn.Module):
     #   imgs - (only if save_intermediate=True) list of iternediate
     #          outputs for the first image i the batch of shape (steps, C, L, W)
     @torch.no_grad()
-    def sample_imgs(self, batchSize, class_label=-1, w=0.0, save_intermediate=False, use_tqdm=False, unreduce=False, corrected=False, classifier_guidance=0, grads_file=None):
+    def sample_imgs(self, batchSize, class_label=-1, w=0.0, save_intermediate=False, use_tqdm=False,
+                    unreduce=False, corrected=False, classifier_guidance=None):
         # Make sure the model is in eval mode
         self.eval()
 
         # The initial image is pure noise
         output = torch.randn((batchSize, 3, 64, 64)).to(self.device)
+        if classifier_guidance:
+            print(f"Classifier guidance is enabled with {classifier_guidance} classifier")
 
         # Iterate T//step_size times to denoise the images (sampling from [T:1])
         imgs = []
@@ -649,7 +652,7 @@ class diff_model(nn.Module):
             if use_tqdm else zip(reversed(range(1, num_steps+1)), reversed(range(1, self.T+1, self.step_size))):
 
             # Unoise by 1 step according to the DDIM and DDPM scheduler
-            if classifier_guidance > 0:
+            if classifier_guidance is not None:
                     output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected, classifier_guidance)
             else:
                 output = self.unnoise_batch(output, t_DDIM, t_DDPM, class_label, w, corrected)
@@ -659,25 +662,22 @@ class diff_model(nn.Module):
         # Unreduce the image from [-1:1] to [0:255]
         if unreduce:
             output = unreduce_image(output).clamp(0, 255)
-        if grads_file:
-            self.save_grads_to_file(grads_file)
-            # self.save_grads_gif(grads_file)
+        if self.log_scores:
+            self.append_log_scores_to_file()
 
         # Return the output images and potential intermediate output
         return (output,imgs) if save_intermediate else output
 
 
-    def save_grads_to_file(self, grads_file):
-        # Save the gradients to a file
-        with open(grads_file + ".txt", "w") as f:
-            for grad in self.grads:
-                f.write(str(grad.tolist()) + "\n")
-
-    def read_grads_from_file(self, grads_file):
-        # Read the gradients from a file
-        with open(grads_file, "r") as f:
-            for line in f:
-                self.grads.append(torch.tensor(json.loads(line)))
+    def append_log_scores_to_file(self):
+        data = []
+        fname = "log_scores.txt"
+        read = os.path.exists(fname)
+        with open(fname, "w+") as fp:
+            if read:
+                data = json.load(fp)
+            data.append(self.log_scores)
+            json.dump(data, fp)
 
     # Save the model
     # saveDir - Directory to save the model state to

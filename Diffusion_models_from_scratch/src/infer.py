@@ -23,13 +23,13 @@ import click
 @click.option("--guidance", "w", type=int, default=4, help="Classifier guidance scale which must be >= 0. The higher the value, the better the image quality, but the lower the image diversity.", required=False)
 @click.option("--class_label", "class_label", type=int, default=0, help="0-indexed class value. Use -1 for a random class and any other class value >= 0 for the other classes. FOr imagenet, the class value range from 0 to 999 and can be found in data/class_information.txt", required=False)
 @click.option("--corrected", "corrected", type=bool, default=False, help="True to put a limit on generation, False to not put a litmit on generation. If the model is generating images of a single color, then you may need to set this flag to True. Note: This restriction is usually needed when generating long sequences (low step size) Note: With a higher guidance w, the correction usually messes up generation.", required=False)
-@click.option("--classifier-guidance", "classifier_guidance", type=int, default=0, help="True to do classifier guidance, False to do classifier-free guidance", required=False)
+@click.option("--classifier_guidance", "classifier_guidance", type=str, default="", help="True to do classifier guidance, False to do classifier-free guidance", required=False)
 
 # Output parameters
 @click.option("--out_imgname", "out_imgname", type=str, default="fig.png", help="Name of the file to save the output image to.", required=False)
 @click.option("--out_gifname", "out_gifname", type=str, default="diffusion.gif", help="Name of the file to save the output image to.", required=False)
 @click.option("--gif_fps", "gif_fps", type=int, default=10, help="FPS for the output gif.", required=False)
-@click.option("--grads_file", "grads_file", type=str, default="grads.txt", help="Name of the file to save the classifier guidance gradients to.", required=False)
+@click.option("--no_free_guidance", "no_free_guidance", type=bool, default=True, help="Name of the file to save the classifier guidance gradients to.", required=False)
 
 def infer(
     loadDir: str,
@@ -42,12 +42,12 @@ def infer(
     w: int,
     class_label: int,
     corrected: bool,
-    classifier_guidance: bool,
+    classifier_guidance: str,
 
     out_imgname: str,
     out_gifname: str,
     gif_fps: int,
-    grads_file: str
+    no_free_guidance: bool
     ):
 
     
@@ -58,13 +58,13 @@ def infer(
     ### Model Creation
 
     # Create a dummy model
-    model = diff_model(3, 3, 1, 1, ["res", "res"], 100000, "cosine", 100, device, None, None, 16, 0.0, step_size, DDIM_scale)
+    model = diff_model(3, 3, 1, 1, ["res", "res"], 100000, "cosine", 100, device, None, None, 16, 0.0, step_size, DDIM_scale, no_free_guidance=no_free_guidance)
     
     # Load in the model weights
     model.loadModel(loadDir, loadFile, loadDefFile)
     
     # Sample the model
-    noise, imgs = model.sample_imgs(1, class_label, w, True, True, True, corrected, classifier_guidance, grads_file)
+    noise, imgs = model.sample_imgs(1, class_label, w, True, True, True, corrected, classifier_guidance)
             
     # Convert the sample image to 0->255
     # and show it
@@ -74,7 +74,7 @@ def infer(
     for img in noise:
         plt.imshow(img.permute(1, 2, 0))
         plt.savefig(out_imgname, bbox_inches='tight', pad_inches=0, )
-        plt.show()
+        # plt.show()
 
     # Image evolution gif
     plt.close('all')
