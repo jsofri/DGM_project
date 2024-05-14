@@ -24,6 +24,7 @@ import click
 @click.option("--class_label", "class_label", type=int, default=0, help="0-indexed class value. Use -1 for a random class and any other class value >= 0 for the other classes. FOr imagenet, the class value range from 0 to 999 and can be found in data/class_information.txt", required=False)
 @click.option("--corrected", "corrected", type=bool, default=False, help="True to put a limit on generation, False to not put a litmit on generation. If the model is generating images of a single color, then you may need to set this flag to True. Note: This restriction is usually needed when generating long sequences (low step size) Note: With a higher guidance w, the correction usually messes up generation.", required=False)
 @click.option("--classifier_guidance", "classifier_guidance", type=str, default="", help="True to do classifier guidance, False to do classifier-free guidance", required=False)
+@click.option("--smooth_grad", "smooth_grad", type=bool, default=False, help="True to do smooth the classifier guidance gradient signal", required=False)
 
 # Output parameters
 @click.option("--out_imgname", "out_imgname", type=str, default="fig.png", help="Name of the file to save the output image to.", required=False)
@@ -43,6 +44,7 @@ def infer(
     class_label: int,
     corrected: bool,
     classifier_guidance: str,
+    smooth_grad: bool,
 
     out_imgname: str,
     out_gifname: str,
@@ -64,7 +66,7 @@ def infer(
     model.loadModel(loadDir, loadFile, loadDefFile)
     
     # Sample the model
-    noise, imgs = model.sample_imgs(1, class_label, w, True, True, True, corrected, classifier_guidance)
+    noise, imgs = model.sample_imgs(1, class_label, w, True, True, True, corrected, classifier_guidance, smooth_grad)
             
     # Convert the sample image to 0->255
     # and show it

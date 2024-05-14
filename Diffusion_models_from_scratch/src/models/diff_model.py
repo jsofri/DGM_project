@@ -3,6 +3,7 @@ import sys
 sys.path.append('../helpers')
 sys.path.append('../blocks')
 
+import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -503,7 +504,7 @@ class diff_model(nn.Module):
             exit()
         return out
 
-    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False, classifier_guidance="openai"):
+    def unnoise_batch_with_classifier(self, x_t, t_DDIM, t_DDPM, class_label=-1, w=0.0, corrected=False, classifier_guidance="openai", smooth_grad=False):
         assert w >= 0.0, "The value of w (classifier guidance factor) cannot be less than 0."
         class_label = int(class_label)
         assert class_label > -2 and class_label < self.num_classes,\
@@ -574,18 +575,31 @@ class diff_model(nn.Module):
 
                     # Modify the noise vector by subtracting the scaled gradient
                     # 'w' is the scaling factor controlling the strength of the guidance
-                    noise_t += var_t * w * grad_x_in_resized
+                    noise_t -= var_t * w * grad_x_in_resized
 
                 if classifier_guidance == "openai":  # use guided diffusion 64x64 classifier
                     x_in = x_t.detach().requires_grad_(True)
-                    # logits = classifier2(x_in, torch.tensor([0]))
-                    logits = classifier2(x_in, t_DDPM)
-                    log_probs = F.log_softmax(logits, dim=-1)
+                    num_iters = 10 if smooth_grad else 1
+                    grads = []
+                    for _ in range(num_iters):
+                        classifier2.zero_grad()
+                        if smooth_grad:
+                            perturbed_x_t = x_t + np.random.normal(0, 0.01, size=x_t.shape).astype(np.float32)
+                            perturbed_x_t = perturbed_x_t.requires_grad_(True)
+                            logits = classifier2(perturbed_x_t, t_DDPM)
+                        else:
+                            logits = classifier2(x_in, t_DDPM)
+                        log_probs = F.log_softmax(logits, dim=-1)
 
-                    # Select the log probability of the desired class
-                    selected_log_prob = log_probs[:, class_label]
-                    self.log_scores.append(float(selected_log_prob[0]))
-                    grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
+                        # Select the log probability of the desired class
+                        selected_log_prob = log_probs[:, class_label]
+                        self.log_scores.append(float(selected_log_prob[0]))
+                        if smooth_grad:
+                            grad = torch.autograd.grad(selected_log_prob.sum(), perturbed_x_t)[0]
+                        else:
+                            grad = torch.autograd.grad(selected_log_prob.sum(), x_in)[0]
+                        grads.append(grad)
+                    grad = torch.stack(grads).mean(0)
                     # noise_t -= grad * var_t * w
                     noise_t -= grad * w
 
@@ -635,7 +649,7 @@ class diff_model(nn.Module):
     #          outputs for the first image i the batch of shape (steps, C, L, W)
     @torch.no_grad()
     def sample_imgs(self, batchSize, class_label=-1, w=0.0, save_intermediate=False, use_tqdm=False,
-                    unreduce=False, corrected=False, classifier_guidance=None):
+                    unreduce=False, corrected=False, classifier_guidance=None, smooth_grad=False):
         # Make sure the model is in eval mode
         self.eval()
 
@@ -652,7 +666,7 @@ class diff_model(nn.Module):
 
             # Unoise by 1 step according to the DDIM and DDPM scheduler
             if classifier_guidance is not None:
-                    output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected, classifier_guidance)
+                    output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected, classifier_guidance, smooth_grad)
             else:
                 output = self.unnoise_batch(output, t_DDIM, t_DDPM, class_label, w, corrected)
             if save_intermediate:
