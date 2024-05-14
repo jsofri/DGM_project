@@ -37,8 +37,7 @@ if __name__ == "__main__":
         "4"
     ]
 
-    for _ in range(50):
-        infer()
+    infer()
 
     print()
     print("Check the following files:")
