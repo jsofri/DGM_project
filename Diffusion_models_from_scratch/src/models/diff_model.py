@@ -672,12 +672,15 @@ class diff_model(nn.Module):
     def append_log_scores_to_file(self):
         data = []
         fname = "log_scores.txt"
-        read = os.path.exists(fname)
-        with open(fname, "w+") as fp:
-            if read:
-                data = json.load(fp)
+        if not os.path.exists(fname):
+            with open(fname, "w") as fp:
+                json.dump(data, fp)
+        with open(fname, "r+") as fp:
+            data = json.load(fp)
             data.append(self.log_scores)
-            json.dump(data, fp)
+            fp.seek(0) # rewind to the beginning of the file
+            json.dump(data, fp, indent=4)
+            fp.truncate()  # truncate the file to the current position of the file pointer
 
     # Save the model
     # saveDir - Directory to save the model state to
