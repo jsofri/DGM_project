@@ -665,7 +665,7 @@ class diff_model(nn.Module):
             if use_tqdm else zip(reversed(range(1, num_steps+1)), reversed(range(1, self.T+1, self.step_size))):
 
             # Unoise by 1 step according to the DDIM and DDPM scheduler
-            if classifier_guidance is not None:
+            if classifier_guidance:
                     output = self.unnoise_batch_with_classifier(output, t_DDIM, t_DDPM, class_label, w, corrected, classifier_guidance, smooth_grad)
             else:
                 output = self.unnoise_batch(output, t_DDIM, t_DDPM, class_label, w, corrected)

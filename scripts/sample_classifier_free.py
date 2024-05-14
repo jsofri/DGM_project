@@ -24,7 +24,9 @@ if __name__ == "__main__":
         f"--loadDefFile",
         f"model_params_479e_600000s.json",
         f"--class_label",
-        f"207"  # Golden retriever, hopefully...
+        f"207",  # Golden retriever, hopefully...
+        "--no_free_guidance",
+        "0"
     ]
 
     infer()
