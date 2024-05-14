@@ -88,7 +88,6 @@ class diff_model(nn.Module):
         self.DDIM_scale = DDIM_scale
         self.num_classes = num_classes
         self.min_prediction = float('inf')
-        self.do_guidance = True
         self.log_scores = []
         self.no_free_guidance = no_free_guidance
 
@@ -545,7 +544,7 @@ class diff_model(nn.Module):
         # START OF CLASSIFIER GUIDANCE
 
         # Get classifier predictions if class_label is specified and w > 0
-        if class_label != -1 and w > 0 and self.do_guidance:
+        if class_label != -1 and w > 0:
             with torch.enable_grad():
                 if classifier_guidance == "resnet18":  # use resnet18 classifier, which requires rescale of the image and the gradient
                     # Apply the classifier_transform to each image in the batch
