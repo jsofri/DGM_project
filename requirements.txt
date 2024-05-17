@@ -2,6 +2,6 @@ blobfile
 click
 matplotlib
 numpy
-pytorch
+torch
 torchvision
 tqdm
