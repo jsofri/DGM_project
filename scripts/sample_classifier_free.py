@@ -1,37 +1,36 @@
-import os
-import sys
+import torch
+from diffusers import ConsistencyModelPipeline
 
-script_dir = os.path.dirname(os.path.realpath(__file__))
-repo_root = os.path.abspath(os.path.dirname(script_dir))
+# Set the device to GPU if available
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# modify environment before importing non-builtin module
-os.environ["REPO_ROOT"] = repo_root
+# Load the cd_imagenet64_l2 checkpoint
+model_id_or_path = "openai/diffusers-cd_imagenet64_l2"
+try:
+    pipe = ConsistencyModelPipeline.from_pretrained(model_id_or_path, torch_dtype=torch.float16)
+except AttributeError as e:
+    print(f"AttributeError: {e}")
+    print("Ensure that the 'safetensors' library is correctly installed.")
+    exit(1)
+except UnicodeDecodeError as e:
+    print(f"UnicodeDecodeError: {e}")
+    print("There might be an issue with the model file encoding. Try re-downloading the model.")
+    exit(1)
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
+    exit(1)
 
-# add to python path
-sys.path.append(f"{repo_root}/Diffusion_models_from_scratch")
-from src.infer import infer
+pipe.to(device)
 
+# ImageNet-64 class label for golden retriever
+class_id = 207  # Class ID for golden retriever
 
+# Generate and save 10 images
+for i in range(10):
+    try:
+        image = pipe(num_inference_steps=1, class_labels=class_id).images[0]
+        image.save(f"golden_retriever_{i}.png")
+    except Exception as e:
+        print(f"An error occurred while generating or saving image {i}: {e}")
 
-if __name__ == "__main__":
-    # manipulate sys.argv to make the module work sa expected
-    sys.argv = [
-        f"{repo_root}/Diffusion_models_from_scratch/src/infer.py",
-        f"--loadDir",
-        f"{repo_root}/Diffusion_models_from_scratch/models",
-        f"--loadFile",
-        f"model_479e_600000s.pkl",
-        f"--loadDefFile",
-        f"model_params_479e_600000s.json",
-        f"--class_label",
-        f"207",  # Golden retriever, hopefully...
-        "--no_free_guidance",
-        "0"
-    ]
-
-    infer()
-
-    print()
-    print("Check the following files:")
-    print(f"sample diffusion GIF: {repo_root}/diffusion.gif")
-    print(f"sample: {repo_root}/fig.png")
+print("Generated 10 images of golden retriever.")
